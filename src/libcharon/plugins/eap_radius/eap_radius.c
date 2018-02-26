@@ -452,9 +452,10 @@ static void add_nameserver_attribute(eap_radius_provider_t *provider,
 }
 
 /**
- * Add a UNITY_LOCAL_LAN or UNITY_SPLIT_INCLUDE attribute
+ * Add a UNITY_LOCAL_LAN or UNITY_SPLIT_INCLUDE attribute if IKEv1
+ * Add INTERNAL_IP4_SUBNET attribute(s) if IKEv2
  */
-static void add_unity_split_attribute(eap_radius_provider_t *provider,
+static void add_unity_split_attribute(bool translate, eap_radius_provider_t *provider,
 							uint32_t id, configuration_attribute_type_t type,
 							chunk_t data)
 {
@@ -467,7 +468,10 @@ static void add_unity_split_attribute(eap_radius_provider_t *provider,
 	{
 		return;
 	}
-	writer = bio_writer_create(16); /* two IPv4 addresses and 6 bytes padding */
+	/* writer for IKEv1: 16 bytes - Two IPv4 addresses and 6 bytes padding
+	 * writer for IKEv2: 8 bytes - Two IPv4 addresses
+	 */
+	writer = translate ? bio_writer_create(16) : bio_writer_create(8);
 	enumerator = enumerator_create_token(buffer, ",", " ");
 	while (enumerator->enumerate(enumerator, &token))
 	{
@@ -492,17 +496,27 @@ static void add_unity_split_attribute(eap_radius_provider_t *provider,
 			DESTROY_IF(net);
 			continue;
 		}
-		writer->write_data(writer, net->get_address(net));
-		writer->write_data(writer, mask->get_address(mask));
-		padding = writer->skip(writer, 6); /* 6 bytes pdding */
-		memset(padding.ptr, 0, padding.len);
+		if (!translate) {
+			writer->write_data(writer, net->get_address(net));
+			writer->write_data(writer, mask->get_address(mask));
+			padding = writer->skip(writer, 6); /* 6 bytes padding */
+			memset(padding.ptr, 0, padding.len);
+		} /*If adding to IKEv2 CP, each split-tunnel CIDR has to be contained in its own configuration attribute.*/
+		else {
+			writer->write_data(writer, net->get_address(net));
+			writer->write_data(writer, mask->get_address(mask));
+			data = writer->extract_buf(writer);
+			if (data.len)
+			{
+				provider->add_attribute(provider, id, INTERNAL_IP4_SUBNET, data);
+			}
+		}
 		mask->destroy(mask);
 		net->destroy(net);
 	}
 	enumerator->destroy(enumerator);
 
-	data = writer->get_buf(writer);
-	if (data.len)
+	if (!translate && data.len)
 	{
 		provider->add_attribute(provider, id, type, data);
 	}
@@ -618,22 +632,22 @@ static void process_cfg_attributes(radius_message_t *msg)
 			}
 		}
 		enumerator->destroy(enumerator);
-
-		if (split_type != 0 &&
-			ike_sa->supports_extension(ike_sa, EXT_CISCO_UNITY))
-		{
-			enumerator = msg->create_vendor_enumerator(msg);
-			while (enumerator->enumerate(enumerator, &vendor, &type, &data))
+		//If IKEv2, translate CVPN3000-IPSec-Split-Tunnel-List to INTERNAL_IPV4_SUBNET
+		bool translate = (ike_sa->get_version(ike_sa) == IKEV2) ? true : false ;
+			if (translate || (split_type != 0 && ike_sa->supports_extension(ike_sa, EXT_CISCO_UNITY)))
 			{
-				if (vendor == PEN_ALTIGA /* aka Cisco VPN3000 */ &&
-					type == 27 /* CVPN3000-IPSec-Split-Tunnel-List */)
+				enumerator = msg->create_vendor_enumerator(msg);
+				while (enumerator->enumerate(enumerator, &vendor, &type, &data))
 				{
-					add_unity_split_attribute(provider,
-							ike_sa->get_unique_id(ike_sa), split_type, data);
+					if (vendor == PEN_ALTIGA /* aka Cisco VPN3000 */ &&
+							type == 27 /* CVPN3000-IPSec-Split-Tunnel-List */)
+					{
+						add_unity_split_attribute(translate,provider,
+								ike_sa->get_unique_id(ike_sa), split_type, data);
+					}
 				}
+				enumerator->destroy(enumerator);
 			}
-			enumerator->destroy(enumerator);
-		}
 	}
 }
 
