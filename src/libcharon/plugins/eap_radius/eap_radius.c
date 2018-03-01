@@ -406,7 +406,7 @@ static void process_timeout(radius_message_t *msg)
 /**
  * Add a Cisco Unity configuration attribute
  */
-static void add_unity_attribute(eap_radius_provider_t *provider, uint32_t id,
+static void add_unity_attribute(bool translate, eap_radius_provider_t *provider, uint32_t id,
 								int type, chunk_t data)
 {
 	switch (type)
@@ -419,6 +419,23 @@ static void add_unity_attribute(eap_radius_provider_t *provider, uint32_t id,
 			provider->add_attribute(provider, id, UNITY_DEF_DOMAIN, data);
 			break;
 		case 29: /* CVPN3000-IPSec-Split-DNS-Names */
+			if (translate){
+				char buffer[256];
+				chunk_t token;
+				if (snprintf(buffer, sizeof(buffer), "%.*s", (int)data.len,
+						data.ptr) >= sizeof(buffer))
+				{
+					return;
+				}
+
+				enumerator_t *enumerator = enumerator_create_token(buffer, " ", ",");
+				while (enumerator->enumerate(enumerator, &token))
+				{
+					provider->add_attribute(provider, id, INTERNAL_DNS_DOMAIN, token);
+				}
+
+				break;
+			}
 			provider->add_attribute(provider, id, UNITY_SPLITDNS_NAME, data);
 			break;
 	}
@@ -567,6 +584,7 @@ static void process_cfg_attributes(radius_message_t *msg)
 		enumerator->destroy(enumerator);
 
 		enumerator = msg->create_vendor_enumerator(msg);
+		bool translate = (ike_sa->get_version(ike_sa) == IKEV2) ? true : false ;
 		while (enumerator->enumerate(enumerator, &vendor, &type, &data))
 		{
 			if (vendor == PEN_ALTIGA /* aka Cisco VPN3000 */)
@@ -587,9 +605,9 @@ static void process_cfg_attributes(radius_message_t *msg)
 					case 28: /* CVPN3000-IPSec-Default-Domain */
 					case 29: /* CVPN3000-IPSec-Split-DNS-Names */
 					case 36: /* CVPN3000-IPSec-Banner2 */
-						if (ike_sa->supports_extension(ike_sa, EXT_CISCO_UNITY))
+						if (translate || ike_sa->supports_extension(ike_sa, EXT_CISCO_UNITY))
 						{
-							add_unity_attribute(provider,
+							add_unity_attribute(translate, provider,
 									ike_sa->get_unique_id(ike_sa), type, data);
 						}
 						break;
@@ -633,21 +651,20 @@ static void process_cfg_attributes(radius_message_t *msg)
 		}
 		enumerator->destroy(enumerator);
 		//If IKEv2, translate CVPN3000-IPSec-Split-Tunnel-List to INTERNAL_IPV4_SUBNET
-		bool translate = (ike_sa->get_version(ike_sa) == IKEV2) ? true : false ;
-			if (translate || (split_type != 0 && ike_sa->supports_extension(ike_sa, EXT_CISCO_UNITY)))
+		if (translate || (split_type != 0 && ike_sa->supports_extension(ike_sa, EXT_CISCO_UNITY)))
+		{
+			enumerator = msg->create_vendor_enumerator(msg);
+			while (enumerator->enumerate(enumerator, &vendor, &type, &data))
 			{
-				enumerator = msg->create_vendor_enumerator(msg);
-				while (enumerator->enumerate(enumerator, &vendor, &type, &data))
+				if (vendor == PEN_ALTIGA /* aka Cisco VPN3000 */ &&
+						type == 27 /* CVPN3000-IPSec-Split-Tunnel-List */)
 				{
-					if (vendor == PEN_ALTIGA /* aka Cisco VPN3000 */ &&
-							type == 27 /* CVPN3000-IPSec-Split-Tunnel-List */)
-					{
-						add_unity_split_attribute(translate,provider,
-								ike_sa->get_unique_id(ike_sa), split_type, data);
-					}
+					add_unity_split_attribute(translate,provider,
+							ike_sa->get_unique_id(ike_sa), split_type, data);
 				}
-				enumerator->destroy(enumerator);
 			}
+			enumerator->destroy(enumerator);
+		}
 	}
 }
 

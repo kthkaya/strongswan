@@ -52,6 +52,7 @@ enum configuration_attribute_type_t {
 	/* RFC 7651 */
 	P_CSCF_IP4_ADDRESS		= 20,
 	P_CSCF_IP6_ADDRESS		= 21,
+	INTERNAL_DNS_DOMAIN     = 25,
 	/* XAUTH attributes */
 	XAUTH_TYPE              = 16520,
 	XAUTH_USER_NAME         = 16521,
