@@ -485,10 +485,10 @@ static void add_unity_split_attribute(bool translate, eap_radius_provider_t *pro
 	{
 		return;
 	}
-	/* writer for IKEv1: 16 bytes - Two IPv4 addresses and 6 bytes padding
-	 * writer for IKEv2: 8 bytes - Two IPv4 addresses
+	/* writer for IKEv2: 8 bytes - Two IPv4 addresses
+	 * writer for IKEv1: 16 bytes - Two IPv4 addresses and 6 bytes padding
 	 */
-	writer = translate ? bio_writer_create(16) : bio_writer_create(8);
+	writer = translate ? bio_writer_create(8) : bio_writer_create(16);
 	enumerator = enumerator_create_token(buffer, ",", " ");
 	while (enumerator->enumerate(enumerator, &token))
 	{
@@ -533,13 +533,15 @@ static void add_unity_split_attribute(bool translate, eap_radius_provider_t *pro
 	}
 	enumerator->destroy(enumerator);
 
-	if (!translate && data.len)
+
+	if (!translate)
 	{
-		provider->add_attribute(provider, id, type, data);
+		data = writer->get_buf(writer);
+		if (data.len)
+			provider->add_attribute(provider, id, type, data);
 	}
 	writer->destroy(writer);
 }
-
 /**
  * Handle Framed-IP-Address and other IKE configuration attributes
  */
